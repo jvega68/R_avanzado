@@ -1,0 +1,407 @@
+---
+title: 'R avanzado. Sesión 2: Series de tiempo'
+author: "Jorge de la Vega"
+institute: ITAM
+date: "2025-10-9"
+lang: es
+format: 
+  html:
+    #page-layout: full
+    embed-resources: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r config, include = F}
+options(width=120)
+token_jvg <- "e646bf63bcd9b3b7f9f18a2faa61b797ff44507f4ee3efd4ad89b7d204fec4c3"
+```
+
+En esta sesión consideraremos ejemplos de series de tiempo, sus características y estimaciones desde el punto de vista de su aplicación práctica, usando `R`.
+
+Dada la extensión del tema, no es posible abarcar todos los temas posibles, por lo que revisaremos algunos temas en especial.
+
+En términos prácticos, una serie de tiempo se puede analizar con varios propósitos en mente:
+suavizamiento, modelación, predicción. Nos interesa comprender el comportamiento de una variable $y_t$ a lo largo del tiempo, por ejemplo, para:
+
+- comprender sus fluctuaciones con respecto a un valor promedio, (variabilidad de la serie);
+- identificar tendencia y nivel de la serie;
+- proyectar su posible comportamiento hacia el futuro, generando pronósticos y predicciones útiles para la planeación y toma de decisiones;
+- encontrar un modelo matemático que explique el *proceso generador de los datos* así como su *comportamiento*, a través de si misma o de otros posibles *predictores*.
+
+Un supuesto fundamental de las series de tiempo es que es factible que *el comportamiento pasado de una variable nos ayude a explicar su comportamiento actual o su comportamiento futuro*.
+
+# Pronósticos y análisis de series temporales.
+
+Es importante hacer notar que pronosticar y analizar una serie de tiempo son dos actividades distintas. Un pronóstico es una visión de un futuro incierto, mientras que analizar una serie de tiempo es describir el proceso generador de los datos. Podemos analizar una serie de tiempo sin considerar como objetivo hacer pronósticos, así como podemos hacer pronósticos sin pensar en series de tiempo (o de hecho cualquier otro tipo de análisis).
+
+Desde el punto de vista estadístico, los principales precursores de la actividad de pronóstico son la construcción de un modelo adecuado basado en el desarrollo histórico de la serie y la utilización de información relevante al posible desarrollo futuro de la serie.
+
+## Ejemplos de series de tiempo
+
+### 1. Datos de Covid-19
+
+Los siguientes datos son tomados directamente del [micrositio de la Organización Mundial de la Salud](https://covid19.who.int/info?openIndex=2) en donde se puede encontrar el catálogo de variables disponibles. Nos concentraremos en los datos correspondiente a México.
+
+Consideremos los datos diarios correspondientes a nuevos casos. La ventaja de tomar los datos directamente de la fuente es que se actualizarán oportunamente.
+
+```{r}
+library(readr)
+library(lubridate)
+datos <- read_csv("https://srhdpeuwpubsa.blob.core.windows.net/whdh/COVID/WHO-COVID-19-global-daily-data.csv")
+mex <- subset(datos, Country == "Mexico")
+plot(mex$New_cases, type = "l") # primer intento
+mex$Fecha <- as.Date(mex$Date_reported, format = "%Y-%m-%d")
+mex <- subset(mex, year(mex$Date_reported) < 2024)
+plot(mex$Fecha, mex$New_deaths,
+     type = "l",
+     main = "Nuevas muertes registradas por Covid-19",
+     xlab = "Fecha",
+     ylab = "Nuevas muertes")
+abline(h = seq(0, 1500, by = 100), lty = 3, col = "snow4")
+```
+
+
+### 2. Datos de Indice de Precios al Consumidor e inflación
+
+Para obtener datos del [Sistema de información Económica
+(SIE)](https://www.banxico.org.mx/SieAPIRest/service/v1/doc/ejemplos) del Banco de México, podemos
+usar su API y el paquete `siebanxicor`.
+
+
+```{r}
+#install.packages("siebanxicor")
+library(siebanxicor)
+```
+
+Se necesita generar un token para poder acceder a los datos. Se puede obtener un token desde este [enlace](https://www.banxico.org.mx/SieAPIRest/service/v1/token)
+
+```{r}
+setToken(token_jvg)
+```
+
+Podemos traer una serie o varias series al mismo tiempo. Por ejemplo, 
+
+```{r}
+reserva <- getSeriesData("SF43707")
+str(reserva)
+plot(reserva$SF43707$date, reserva$SF43707$value, type = "l")
+```
+
+
+```{r}
+# Obtener token de: https://www.banxico.org.mx/SieAPIRest/service/v1/token
+setToken(token_jvg)
+idSeries <- c("SP1")
+inpc <- getSeriesData(idSeries)
+str(inpc)
+head(inpc$SP1$value)
+head(inpc$SP1$date)
+```
+
+Para datos que son series de tiempo regulares, podemos convertirlas a objetos que son series de
+tiempo, lo que permite realizar algunas operaciones básicas sobre ellas que son más convenientes.
+
+```{r}
+inpc <- ts(inpc$SP1$value, start = c(1969,01), freq = 12)
+head(inpc)
+tail(inpc)
+plot(inpc, xlab = "Fecha", main = "Serie SP1 de Banco de México")
+```
+
+Con esta serie, podemos calcular la inflación mensual. Para esto podemos usar la siguiente función
+en las series de tiempo:
+
+-   `diff(y,lag = k)`: calcula las diferencias entre observaciones separadas $k$ valores:
+    $w_{t} = y_t-y_{t-k}$
+
+```{r}
+inflacion <- 100*diff(inpc,12)/inpc # calcula la inflación
+plot(inflacion, main = "Tasa de inflación anualizada mensual", 
+     xlab = "tiempo", ylab = expression(pi[t]), 
+     type = "o", pch =16, col = "red")
+abline(h=seq(0,70,by=10),col = "snow3")
+```
+
+### 3. Goles de México en mundiales (a favor y en contra)
+
+Los siguientes datos son tomados de Wikipedia. Notemos que esta serie es irregular, porque los datos no están igualmente espaciados.
+
+```{r}
+goles <- data.frame(año = c(1930,1950,1954,1958,1962,1966,1970,1978,1986,1994,1998,2002,2006,2010,2014,2018),
+                    gf = c(4,2,2,1,3,1,0,2,1,1,2,2,2,1,1,5),
+                    gc = c(13,10,8,8,4,3,9,12,4,1,9,4,6,4,9,3))
+plot(goles$año, goles$gf, ylim = c(0,15), col = "green4",
+     main = "Goles de México en mundiales a favor y en contra", type = "S")
+points(goles$año,goles$gf, pch = 16, col = "green4", cex = 2)
+lines(goles$año,goles$gc, col = "red4",
+     main = "Goles de México en mundiales a favor y en contra", 
+     type = "S")
+points(goles$año, goles$gc, pch = 16, col = "red4", cex = 1)
+legend("topright",legend=c("goles a favor", "goles en contra"),lty=c(1,1),col = c("green4","red4"),pch = c(16,16), cex = c(.9,.9))
+```
+
+Usualmente las series de tiempo irregulares son difíciles de manejar, pero se pueden trabajar con el paquete `zoo` en `R`. Esto corresponde a un curso más avanzado.
+
+## Descomposición de series de tiempo.
+
+Una forma de modelar una serie de tiempo se obtiene al suponer que está conformada de diferentes componentes. Los componentes básicos son los siguientes:
+
+-   **Tendencia**: el movimiento hacia arriba o hacia abajo que caracteriza a una serie de tiempo en un periodo de tiempo dado. Muestra el crecimiento o decline de una serie en el largo plazo.
+-   **Estacionalidad**: es el comportamiento que muestra una serie a lo largo de un periodo de tiempo, típicamente un año, y que se repite durante varios periodos.
+-   **Ciclo**: se refiere a movimientos recurrentes hacia arriba o hacia abajo alrededor del nivel de tendencia. Usualmente son movimientos que se observan en periodos mayores a un año.
+-   **Error**: se refiere a la parte de la serie que es completamente aleatoria; es el error estadístico que se presenta por incertidumbre.
+
+El método clásico de descomposición tiene el objetivo de separar los componentes de una serie de tiempo. Este método supone que una serie de tiempo se puede escribir como una función de tres componentes:
+
+$$X_t= f(TC_t,S_t,E_t)$$
+
+donde $f$ es una función que relaciona los componentes, $TC$ es un componente de tendencia-ciclo, $S$ es un componente estacional, $E$ es el componente de error o ruido de la serie.
+
+El modelo puede ser multiplicativo o aditivo. Veamos un ejemplo. Los datos siguientes corresponden a los pasajeros totales del Aeropuerto Internacional de la Ciudad de Mexico, de enero de 2012 a agosto de 2025. La fuente de datos está en los archivos pdf de [la página del AICM](https://www.aicm.com.mx/estadisticas-del-aicm/17-09-2013).
+
+```{r}
+pasajeros <- ts(c(2295, 2068, 2428, 2330, 2378, 2413, 2869, 2666, 2311, 2494, 2519, 2721,
+               2472, 2113, 2494, 2432, 2551, 2622, 3108, 2884, 2510, 2672, 2727, 2950,
+               2719, 2333, 2669, 2732, 2853, 2777, 3256, 3149, 2683, 2946, 2967, 3171,
+               2894, 2569, 3117, 3080, 3218, 3199, 3711, 3532, 3010, 3265, 3310, 3528,
+               3189, 2860, 3357, 3188, 3420, 3477, 4034, 3771, 3310, 3546, 3619, 3937,
+               3614, 3132, 3620, 3705, 3762, 3805, 4211, 4004, 3347, 3717, 3809, 4004,
+               3830, 3362, 3918, 3880, 3962, 3918, 4449, 4226, 3755, 4060, 4085, 4255,
+               3954, 3516, 4123, 4127, 4347, 4261, 4629, 4432, 3914, 4250, 4252, 4503,
+               4211, 3824, 2668,  296,  276,  559, 1032, 1350, 1508, 1853, 2045, 2360,
+               2076, 1616, 2354, 2626, 3033, 3135, 3593, 3354, 2992, 3508, 3710, 4059,
+               3249, 3008, 3829, 4007, 3589, 3500, 4345, 4317, 3868, 4181, 4120, 4245,
+               3997, 3562, 4130, 4002, 3928, 3921, 4329, 4309, 3829, 4042, 4109, 4259,
+               3795, 3489, 3781, 3692, 3847, 3717, 4118, 3999, 3595, 3716, 3708, 3901,
+               3715, 3247, 3701, 3683, 3610, 4019, 3936), start = c(2012,01), freq = 12)
+
+```
+
+La caida se dede al efecto de la pandemia. Para el ejercicio que haremos aquí, consideraremos el comportamiento de la serie sin la caída mostrada para poder entender el comportamiento "normal" de la serie, y luego veremos cómo podemos modelar esta caída.
+
+```{r}
+plot(pasajeros)
+abline(v = 2012:2025, lty = 3)
+```
+
+A través de hacer varios promedios se van teniendo los diferentes componentes de la serie. Aquí lo haremos directo con una sóla función:
+
+```{r}
+pasajeros2 <- window(pasajeros, end = c(2019,12))
+plot(pasajeros2)
+m <- decompose(pasajeros2, type = "a")
+plot(m)
+m
+```
+
+La ventaja de tener identificados los componentes de la serie es que ahora podemos pronosticar cada componente por separado.
+
+## Promedios móviles
+
+Un *promedio móvil simple de orden* $k$ para el tiempo $t$ se define como el promedio de las $k$ observaciones anteriores a $t$:
+$$ F_t^{(k)} = \frac{y_{t-1} + y_{t-2} + \cdots + y_{t-k}}{k} = \frac{1}{k}\sum_{i=1}^ky_{t-i}$$
+
+Un promedio móvil de orden $k$ se denota como $MA(k)$. Mientras más grande es $k$ el efecto de suavizamiento es mayor, y se pierden más observaciones.
+
+```{r}
+library(forecast) # Rob Hyndman https://otexts.com/fpp3
+```
+
+```{r}
+# Vamos a calcular el ajuste
+plot(pasajeros2)
+(ma5 <- ma(pasajeros2, order = 5, centre = T))
+lines(ma5, col = "purple", lwd = 4)
+lines(ma(pasajeros2, order = 2), col = "yellow3", lwd = 3)
+
+# Para hacer un pronóstico, de un horizonte de 60 periodos
+(F5 <- forecast(ma5, h = 60, level = c(0.80, 0.95, 0.99))) # h es el horizonte
+plot(F5)
+lines(pasajeros, col = "red", lwd = 2)
+```
+
+## Suavizamiento exponencial
+
+Hay situaciones en donde las observaciones más recientes contienen información más actualizada sobre lo que se espera en el futuro y por lo tanto, se les tiene que dar un peso mayor que a las observaciones más antiguas. El método de suavizamiento exponencial calcula el pronóstico como una combinación entre el pronóstico del periodo anterior y la última observación disponible:
+$F_t(\alpha) = \alpha y_{t-1} + (1-\alpha)F_{t-1}$ donde al parámetro $\alpha$ se le llama factor de suavizamiento, y $\alpha\in (0,1)$ es un peso que pondera la relación entre ambos términos.
+
+```{r}
+(se1 <- ses(pasajeros2, alpha = NULL, h = 60, level = c(0.80,0.95,0.99)))
+plot(se1)
+lines(se1$fitted, lwd = 4, col = "salmon")
+lines(pasajeros, col = "green4", lwd = 2)
+```
+
+El pronóstico basado en el suavizamiento exponencial simple produce pronósticos planos, por lo que es sólo adecuado para series de tiempo que no tienen tendencia o componente estacional. En este ejemplo, es un mal método a aplicar. 
+
+
+## Holt-Winters
+
+Este es uno de los modelos más utilizados de pronósticos. El método de Holt-Winters está diseñado para datos estacionales. Winters (1960) extendió el método de Holt, y hay dos versiones dependiendo de cómo se modele la estacionalidad (aditiva o multiplicativa). En este caso se tienen 4 ecuaciones y 3 parámetros:
+
+-   Nivel $L_t = \alpha \frac{y_t}{S_{t-s}} + (1-\alpha)(L_{t-1}+b_{t-1})$
+-   Tendencia $b_t = \beta (L_t-L_{t-1}) + (1-\beta)b_{t-1}$
+-   Estacional $S_t = \gamma \frac{y_t}{L_t} + (1-\gamma)S_{t-s}$
+-   Pronóstico $F_{t+m} = (L_t+b_t m)S_{t-s+m}$
+
+```{r}
+m <- HoltWinters(pasajeros2)
+predict(m, n.ahead = 5)
+plot(m, predicted.values = predict(m, 60, prediction.interval = T, level =.85))
+plot(fitted(m)) # Los componentes de la serie estimada. 
+
+# también podemos la función forcast sobre el modelo ajustado por Holt-Winters
+plot(forecast(m, h = 60))
+lines(pasajeros, col = "red")
+```
+
+## Box y Jenkins (ARIMA)
+
+Aquí agrego un resumen de las herramientas que son necesarias para hacer un análisis de series de tiempo tipo Box-Jenkins. Algunas son necesarias para construir el modelo y otras son necesarias para diagnosticar el modelo.
+
+-   Gráficas de las series de tiempo.
+-   Concepto de estacionariedad, operador diferencia y prueba de estacionariedad de Dickey-Fuller.
+-   Conceptos de autocorrelación y autocorrelación parcial y sus respectivas funciones y gráficas (_acf,pacf_)
+-   Concepto y gráficas de ruido blanco.
+-   Pruebas estadísticas para coeficientes de autocorrelación de Bartlett, y de Ljung-Box.
+-   Definiciones de procesos: autoregresivo (AR), de promedios móviles (MA).
+
+En lo que sigue, se dará un repaso muy general de estos conceptos, y veremos varios ejemplos para ir
+aplicando los conceptos.
+
+### Ejemplo 1: Kleenex
+
+Para conocer el margen de mercado que tiene Kimberly-Clark con la marca kleenex, se le han pedido su producción semanal, que reporta para las 120 semanas anteriores a esta y en unidades de 10,000 paquetes. Se requiere un modelo para analizar su comportamiento y hacer un pronóstico para saber si no está inundando el mercado.
+
+```{r}
+kleenex <- read.table("https://raw.githubusercontent.com/jvega68/MIDE-MyE/refs/heads/main/Datos/kleenex.txt")
+kleenex <- ts(kleenex, start = c(2020,3), freq = 52)
+plot(kleenex)
+```
+
+Vemos que la serie no parece fluctuar en torno a una media constante, y por lo tanto no parece ser
+estacionaria. Si tomamos las primeras diferencias de la serie, definidas como $z_t = y_t - y_{t-1}$
+utilizando el operador `diff` obtenemos lo siguiente:
+
+```{r}
+dkleenex <- diff(kleenex, dif = 1)
+plot(dkleenex)
+```
+
+Ahora la serie parece fluctuar alrededor de una media constante, por lo que la primera diferencia parece ser estacionaria.
+
+En ocasiones no es suficiente tomar sólo una diferencia. Si la primera diferencia no resulta estacionaria, entonces debemos tomar una segunda diferencia. Por ejemplo, tomamos la segunda diferencia de estos datos:
+
+```{r}
+d2kleenex <- diff(kleenex, dif = 2)
+plot(d2kleenex)
+```
+
+Identificando estacionariedad con las funciones de autocorrelación:
+
+```{r}
+layout(matrix(c(1,1,2,2,3,4,5,6),nrow = 2, byrow = T))
+plot(kleenex)
+plot(dkleenex)
+acf(kleenex)
+pacf(kleenex)
+acf(dkleenex)
+pacf(dkleenex)
+```
+
+Pruebas de Box (Box-Pierce y Ljung-Box):
+
+```{r}
+Box.test(dkleenex, lag = 1, type = "Box")
+Box.test(dkleenex, lag = 1, type = "Ljung")
+```
+
+Cálculo de modelos ARIMA por fuerza bruta:
+
+```{r}
+AIC <- array(NA, dim =c(4,2,4), 
+             dimnames = list(paste("p = ",0:3), 
+                             paste("d = ",0:1),
+                             paste("q = ",0:3)))
+for(p in 1:4) 
+  for( q in 1:4) 
+    for(d in 1:2) 
+      AIC[p,d,q] <- arima(kleenex, order = c(p-1,d-1,q-1))$aic
+
+AIC
+
+# Localiza el mínimo AIC
+AIC[which.min(AIC)]
+```
+
+Elegimos dos modelos relativamente cercanos, para ver los coeficientes
+
+```{r}
+mod1 <- arima(kleenex,order = c(3,1,2))
+mod1
+mod2 <- arima(kleenex, order = c(0,1,1))
+mod2
+tsdiag(mod1)
+#Gráfica qqplot de los residuales del modelo 1
+qqnorm(mod1$resid)
+abline(a=0,b=1)
+# Para el modelo 2
+tsdiag(mod2)
+qqnorm(mod2$resid)
+abline(a=0,b=1)
+```
+
+Haciendo pronósticos con el modelo estimado
+
+```{r}
+pron1 <- predict(mod1,n.ahead = 12)
+pron1
+par(mfrow=c(1,1))
+ts.plot(kleenex, pron1$pred, pron1$pred - pron1$se, pron1$pred + pron1$se)
+
+# Prueba de Dickey-Fuller
+# Para revisar si la serie es estacionaria (también se conoce como prueba de raíz unitaria) # H0: la serie no es estacionaria vs Ha: estacionaria
+library(tseries)
+adf.test(kleenex, k = 0) # k es el número de componentes incluídas en la ecuación de regresión que se prueba
+
+```
+
+### Ejemplo 2: IPC
+
+Ejemplo del IPC de la Bolsa Mexicana de Valores. Los datos fueron extraídos de la página del Banco de México. Son datos diarios desde enero de 1999 a la fecha.
+
+```{r}
+idSeries <- c("SF4782") # identificador de la serie de precios y cotizaciones
+ipc <- getSeriesData(idSeries, "1999-01-01")
+ipc <- ts(ipc$SF4782$value, start = c(1999,01), freq = 12)
+plot(ipc)
+dipc <- diff(ipc,dif = 2)
+plot(dipc)
+```
+
+Calculemos algunas estadísticas para la serie diferenciada, para verificar si es ruido blanco. Tomemos $h=30$:
+
+```{r}
+#Box-Pierce
+Box.test(dipc, lag = 30, type = "Box-Pierce")
+#Ljung-Box
+Box.test(dipc,lag = 30, type = "Ljung-Box")
+(mod1 <- arima(dipc,order = c(3,1,2))) # Ejemplo de un modelo ajustado
+
+
+# Prueba de Dickey Fuller para revisar si la serie es estacionaria (también se conocen como pruebas de
+# raíz unitaria)
+library(tseries)  # aqui está la función.
+adf.test(dipc, k = 0) # k es el número de componentes incluídos en la ecuación de regresión que se prueba
+```
+
+La prueba de Dicker-Fuller consiste en estimar la regresión: $$\nabla y_t = \phi y\_{t-1}
++\beta_1\nabla y_{t-1} + \beta_2 \nabla y_{t-2} + \cdots + \beta_p\nabla y_{t-p} + u_t$$ donde $u_t$ es un componente de error que se supone tiene media 0.
+
+## Modelos más complicados
+
+Para el modelo ardl, se puede consultar un ejemplo en: <https://rpubs.com/cyobero/ardl>
+
+
+
