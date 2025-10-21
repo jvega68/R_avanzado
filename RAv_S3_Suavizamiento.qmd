@@ -1,0 +1,575 @@
+---
+title: 'R avanzado. Sesión 3: Suavizamiento de Series de tiempo'
+author: "Jorge de la Vega"
+institute: ITAM
+lang: es
+date: today
+format:
+  html:
+    page-layout: full
+    embed-resources: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(rgl)
+knitr::opts_chunk$set(echo = TRUE, fig.align = "center", fig.height = 5)
+knitr::knit_hooks$set(webgl = hook_webgl)
+```
+
+# Regresión no paramétrica
+
+En el contexto de series de tiempo, los modelos de **regresión no paramétrica** permiten suavizar observaciones pasadas sin asumir formas funcionales específicas. Una de las grandes ventajas de los modelos no paramétricos  es que permite estimar modelos no lineales fácilmente. Además, los modelos se pueden extender fácilmente a la estimación de curvas, no sólo a series temporales. 
+
+Dado un conjunto de datos completos con ruido, permite inferir la señal en observaciones previas. Lo hace en cada punto $x_0$ usando información local (de los puntos vecinos) ponderados por su cercanía a $x_0$. Los métodos difieren en la forma de seleccionar vecinos (por ejemplo ventana o kernel), cómo ponderan, y qué modelo local ajustan (constante, local polinomial) o si usan bases globales (splines).
+
+Los conceptos relacionados con estos métodos son los siguientes: 
+
+- **Vecindad/span/bandwidth**: controla cuánto abarca alrededor de $x_0$. Mientras más pequeño, se tiene más detalle y varianza; mientras más grande se obtiene una curva más suave (mayor sesgo).
+- **Kernel**: función de peso que da mayor peso a observaciones cercanas. Se basa en funciones de densidad (tricubo, gaussiana, rectangular, etc).
+- **Grado del polinomio local**: 0 (constante), 1 (lineal), 2 (cuadrático).
+- **Robustez iterativa**: repondera casos con residuales grandes para reducir la influencia de outliers. 
+
+Los propósitos de estimar un modelo no paramétrico son varios: 
+
+1. Tener un método versátil para explorar relaciones generales entre variables
+2. Dar predicciones a observaciones nuevas sin necesidad de tener un modelo paramétrico fijo.
+3. Como herramienta para identificar observaciones espurias e influencia de puntos aislados.
+4. Método de interpolación de valores faltantes. 
+
+
+Se cuenta con $n$ pares de observaciones $(X_1,Y_1), \ldots (X_n,Y_n)$ independientes de puntos de un vector bivariado $(X,Y)$, y se define la _función de regresión_ como la media condicional 
+$$m(x) = E(Y|X=x)$$
+Sea 
+$$Y_i = m(X_i)+ \varepsilon_i \qquad \mbox{ para } \quad i=1,\ldots, n$$
+
+donde $\varepsilon_i$ son errores con media 0 y varianza $\sigma^2$ constante, y $m$ es una función _suave_. El modelo paraétrico clásico de regresión lineal supone que $Y_i|x\sim N(m(x),\sigma^2)$, donde $m(x)= \beta'x$.
+
+
+## Ajuste de regresión local
+
+Este modelo ajusta rectas a secciones de los datos. La tendencia en $t$ está dada por $T_t=a_t+b_tt$ donde 
+$$ (a_t,b_t)=arg_{min}\left\{\sum_{j=-m}^m a_j(Y_{t+j}-a-b(t+j))^2 \right\} $$
+
+los pesos $a_j$ determinan el peso de cada observación, y $m=\frac{k-1}{2}$
+
+En cada punto $x_0$:
+
+1. Seleccionar los $k$ vecinos más cercanos (definidos por `span` o `bandwidth`).
+2. Calcular los pesos con algún kernel, por ejemplo,  tricubo.
+3. Ajustar un modelo lineal ponderado $Y_i=\beta_0 + \beta_1(x_i-x_0) + \varepsilon_i$
+4. Estimar $\hat{f}(x_0)=\hat{\beta}_0$
+
+Datos simulados: 
+
+```{r , message=FALSE, warning=FALSE}
+set.seed(123)
+n <- 200
+x <- sort(runif(n, 0, 10))
+f <- function(x) sin(2*x)/(1+0.3*x) + 0.3*cos(3*x)
+y_true <- f(x)
+y <- y_true + rnorm(n, sd=0.25 + 0.05*x)
+plot(x, y, pch=16, cex=0.6, main="Datos simulados", xlab="x", ylab="y")
+lines(x, y_true, col="red", lwd=2, lty=2)
+legend("topright", legend=c("Datos", "Función verdadera"), col=c("black","red"),
+       pch=c(16,NA), lty=c(NA,2), bty="n")
+```
+
+
+```{r}
+lineal_local <- function(x0, x, y, h) {
+         u <- (x - x0)/h
+         w <- (1 - abs(u)^3)^3 * (abs(u) <= 1)
+         X <- cbind(1, x - x0)
+         fit <- lm(y ~ X - 1, weights = w)
+         return(coef(fit)[1])
+        }
+
+h <- 0.8 # ejemplo de bandwidth
+y_hat <- sapply(x, lineal_local, x = x, y = y, h = h)
+
+plot(x, y, pch = 16, cex = 0.5, xlab = "x", ylab = "y",
+     main = "Implementación manual de regresión local lineal")
+lines(x, y_true, col = "red", lwd = 2, lty = 2)
+lines(x, y_hat, col = "blue", lwd = 2)
+legend("topright", legend = c("Verdadera","Lineal Local manual"),
+col=c("red","blue"), lty = c(2,1), bty = "n")
+```
+
+
+
+## `loess` (_local regression smoothing_)
+
+LOESS viene de _LOcal regrESSion_, y ajusta en cada punto un polinimio de bajo grado ponderando más los datos vecinos más cercanos. Es robusto ante valores extremos (outliers), que se obtiene de realizar varias iteraciones:
+
+i. Calcula una regresión local $\hat{T_t}$
+ii. Estima el error de ajuste $\hat{E_t}=Y_t-\hat{T_t}$
+iii. Ajusta los pesos $a_j$ de tal manera que las observaciones con  errores grandes $E_t$, reciban un peso menor y tengan menos influencia sobre el ajuste.
+iv. Repetir el paso (i) y los que siguen hasta convergencia.
+
+
+#### Ejemplo de ajuste `loess`
+
+Los datos que se usan son las cantidades mensuales en millones de piezas de billetes en circulación de diferentes denominaciones. 
+
+```{r}
+den <- read.csv("https://raw.githubusercontent.com/jvega68/R_avanzado/refs/heads/master/datos/denom.csv")
+xt <- ts(den$x100, start = c(1993,01), freq = 12)
+z <- loess(xt ~ time(xt)) # default a 0.75
+plot.ts(xt, ylab = "millones de piezas", xlab = "fecha")
+lines(ts(z$fitted, start = c(1993,01), freq = 12), col = "green", lwd = 2)
+lines(ts(loess(den$x100 ~ time(den$x100), span = 0.5)$fitted, start = c(1993, 01), freq = 12), col = "orange", lwd = 2)
+lines(ts(loess(den$x100 ~ time(den$x100), span = 0.2)$fitted, start = c(1993, 01), freq = 12), col = "violet", lwd = 2)
+legend("bottomright", legend = paste("span=",c(0.75, 0.5, 0.2)), col = c("green", "orange", "violet"), lty = c(1,1,1),lwd=c(2,2,2))
+```
+
+
+
+Hay una función `lowess` que es más antigua, y no está basada en fórmula. Tampoco permite elegir el grado del polinomio, porque calcula el ajuste lineal (con grado=1).
+Agrega iteraciones extra para robustecer la estimación. Para los datos simulados: 
+
+
+```{r}
+set.seed(100)
+x <- sort(runif(n, 0, 10))
+f <- function(x) sin(2*x)/(1+0.3*x) + 0.3*cos(3*x)
+y_true <- f(x)
+y <- y_true + rnorm(n, sd=0.25 + 0.05*x)
+
+fit_loess <- loess(y ~ x, span = 0.25, degree = 1)
+fit_lowess <- lowess(x, y, f = 0.25) 
+
+plot(x, y, pch = 16, cex = 0.5, main="Comparación de LOESS vs LOWESS", 
+     xlab = "x", ylab = "y")
+lines(x, y_true, col="red", lty=2, lwd=2)
+lines(x, predict(fit_loess, newdata = data.frame(x=x)), col="blue", lwd=2)
+lines(fit_lowess, col = "darkgreen", lwd=2)
+legend("topright", legend=c("Verdadera","LOESS","LOWESS"),
+       col = c("red", "blue", "darkgreen"), lty = c(2, 1, 1), bty = "n")
+```
+
+
+
+## Otros métodos de suavizamiento
+
+Algunos de los modelos que vamos a considerar son los siguientes: 
+
+- **Estimadores basados en kernel**: Nadaraya-Watson, Gasser-Müller y polinomios locales
+- **Modelos aditivos**: son modelos de la forma $y = \alpha + \sum_{i=1}^p f_i(X_i) + \epsilon$
+- **Splines**
+- **Onduletas o _wavelets_**.
+
+
+
+### Estimadores basados en kernel: Nadaraya-Watson
+
+La estimación basada en kernel usa la idea de colocar un kernel de alguna densidad o cuasi-densidad $K$ en cada uno de los puntos $X_i$ de la muestra para ponderar los puntos $Y_i$ que están en una vecindad de ese valor. La idea esencial es que al estimar $\hat{Y}_0 = m(x_0)$, ponderando con mayor peso a las observaciones que están cerca de un punto focal $x_0$ y menos peso a los que estén lejos.
+
+Los pesos se consideran de la forma $w_i=K\left(\frac{X_i-x_0}{h}\right)$, y se calcula el estimado como: 
+
+$$ \hat{Y_0} =\hat{m}(x_0) = \frac{\sum_{i=1}^nw_iY_i}{\sum_{i=1}^nw_i}$$
+
+Un ejemplo de kernel que se usa en el contexto de suavizamiento es el kernel beta: 
+$$ K(x) = \frac{1}{B(0.5,\gamma+1)}(1-x^2)^{\gamma}I(|x|\leq 1), \quad \gamma = 0,1,2,\ldots$$
+El parámetro $\gamma$ hace flexible este kernel: 
+
+- $\gamma = 0$ es el kernel uniforme
+- $\gamma = 1$ corresponde al kernel de Epanechnikov
+- $\gamma = 2$ es el kernel bipeso
+- $\gamma = 3$ es el kernel tripeso
+- Cuando $\gamma$ es sificientemente grande, se converge al kernel gaussiano.
+
+```{r}
+kbeta <- function(x,gama = 0){
+          1/beta(0.5,gama+1) * (1-x^2)^(gama)*ifelse((x <= 1) & (x >= -1),1,0)
+
+           }
+curve(kbeta(x),from =-1.5, to = 1.5, ylim = c(0,1.8))
+for(i in 1:10)curve(kbeta(x, gama = i),from = -1.5, to = 1.5, add = T)
+```
+
+Un ejemplo de un pseudo-kernel o kernel generalizado es la función $$K(x)=\frac{1}{2}\exp(-|x|/\sqrt{2})\sin(|x|/\sqrt{2}+\pi/4)$$ 
+
+
+```{r}
+k <- function(x){
+0.5*exp(-abs(x)/sqrt(2))*sin(abs(x)/sqrt(2) + pi/4)
+}
+curve(k(x),from =-10, to = 10)
+abline(h=0)
+```
+
+El estimador de Nadaraya-Watson de $m(x)$ se define como: 
+$$\hat{m}(x) = \frac{\sum_{i=1}^nK_h(X_i-x)Y_i}{\sum_{i=1}^nK_h(X_i-x)}$$
+con $K_h(u) = K(u/h)$ una función kernel. 
+
+Este estimador está en la función `ksmooth` que es muy básica. 
+
+```{r}
+x <- ts(den$x100, start = c(1993,01),freq = 12)
+NW1 <- ksmooth(time(x),x, bandwidth = 0.5)
+NW2 <- ksmooth(time(x),x, bandwidth = 3)
+plot(x)
+lines(NW1, col = "red", lwd = 2)
+lines(NW2, col = "orange", lwd = 2)
+legend("bottomright", legend=c("serie original","ksmooth (normal kernel) bw=0.5", "bw=3"),
+        col=c("black","red","orange"), lty=c(1,2,3), bty="n")
+```
+
+
+El valor por default del ancho de banda es 0.5. Pero este valor no es exactamente la varianza asociada al kernel, se escoge de tal manera que: "kernels are scaled so that their quartiles (viewed as probability densities) are at +/-0.25 bandwith ". Entonces **no** es la desviación estándard de la función kernel. **Hay que tener cuidado con algunos valores de default que se usan en algunas funciones**.
+
+Otra función que estima una regresión basada en kernel, con el estimador de Naradaya-Watson, está en el paquete `sm`, función `sm.regression`. Por omisión, el ajuste genera la gráfica.
+
+```{r}
+library(sm)
+m_NW2 <- sm.regression(time(x), x, h = 0.3)  # h es el bandwidth. Parametro display = "none" si no se quiere la gráfica
+names(m_NW2)    # Componentes del objeto generado
+m_NW2$sigma     # Estimación de sigma
+m_NW2$estimate  # Valores estimados
+qqnorm(m_NW2$estimate - m_NW2$data$y)  # qqplot de los residuales del modelo
+```
+
+
+### Estimadores basados en kernel: Gasser-Müller
+
+El estimador de Gasser-Müller (1979) (GM), que usa las áreas del kernel como los pesos, pondera sobre intervalos entre puntos adyacentes, de manera que se obtiene una función suavizada más estable en bordes y con mejor comportamiento teórico para datos desigualmente espaciados. 
+
+Se considera una partición $[-\infty=a_0,a_1,\ldots,a_n,a_{n+1}=\infty]$, y se toman los puntos medios de los intervalos $s_i=(a_i+a_{i+1})/2$. Entonces: 
+
+$$ \hat{m}(x) = \sum_{i=1}^nY_i \int_{s_{i-1}}^{s_i}K_h(u-x)du$$
+Se toman los valores de la muestra ordenados como puntos de la partición $a_i=X_{(i)}$. El estimador de GM es el que minimiza la función $\sum w_i(x)(Y_i-\theta)^2$ con los pesos dados por $w_i=\int_{s_{i-1}}^{s_i}K_h(u-x)du$. Las propiedades de este estimador son las siguientes: 
+
+- Es un suavizador lineal
+- Tiende a ser más estable en los bordes que NW
+- Tiene buenas propiedades de consistencia bajo condiciones suaves
+- Es adecuado para datos irregularmente espaciados. 
+
+El paquete `lokern` immplementa este estimador en un contexto más amplio. 
+
+Se puede obtener como sigue. La diferencia entre las funciones `glkerns` y `lokerns` del paquete  `lokern` es si damos un ancho de banda _global_ o cada punto tiene su ancho de banda _local_. En el primer caso, damos un sólo valor del ancho de banda, en el segundo caso, debemos dar un vector de la misma longitud que los valores de $x$.
+
+```{r}
+library(lokern)
+plot(time(x), x, pch = 16, cex = 0.5,type="l")
+# GM se obtiene tomando is.rand = F
+local <- lokerns(time(x), x, is.rand = F)
+global <- glkerns(time(x), x, is.rand = F, bandwidth = 1) 
+lines(global, col = "red", lwd = 3)
+lines(local, col = "orange", lwd = 3)
+```
+
+También devuelve el ancho de banda efectivo, que permite analizar ćomo cambia la suavidad a lo largo del eje $X$, mostrando cómo el método adapta el grado de suavidad:
+
+- Ancho de banda pequeño: donde la función cambia más rápido (mas detalle)
+- Ancho de banda grande: en zonas suaves o con poco ruido (más suavidad)
+
+```{r}
+plot(local$x.out,local$bandwidth, type = "l", col = "darkgreen", lwd = 2,
+     main = "Ancho de banda local estimado por lokern", xlab = "x",ylab = "h(x)")
+```
+
+## Polinomios locales
+
+Se asume que la función $m(x)$ se puede ajustar por un polinomio de orden $p$ en una vecidad pequeña de $x$ (expansión en series de Taylor):
+
+$$m(x_0) \approx \sum_{j=0}^p\alpha_j(x_0-x)^j, \quad \alpha_j = \frac{m^{(j)}(u)}{j!}$$
+En lugar de minimizar la suma de cuadrados ponderada, el estimador de polinomio local minimiza la función de coeficientes $\alpha = (\alpha_0,\ldots, \alpha_p)$:
+$$RSS(\alpha) = \sum_{i=1}^n\left(Y_i-\sum_{j=1}^p\alpha_j(X_j-x)^j\right)^2K_h(X_i-x)$$
+El caso con p=0 es el de NW. 
+
+El ajuste con polinomios locales es del siguiente modo. En este caso, en lugar de usar un ancho de banda se utiliza un span (`nn`).
+
+```{r}
+library(locfit)  # Paquete para ajuste de polinomios locales
+plot(time(x), x, pch = 16, cex = 0.5, type = "l")
+t <- as.numeric(time(x))
+m1 <- locfit(x ~ lp(t, nn = 0.5, deg = 3))
+lines(m1, col = "blue", lwd = 2)
+```
+
+Este modelo devuelve "grados de libertad", ya que tenemos una regresión lineal ponderada como estimador. En regresión no paramétrica, los grados de libertad se pueden definir de muchas maneras (no equivalentes entre sí), por analogía a mínimos cuadrados: Tenemos la matriz de suavizamiento $S=X(X'WX)^{-1}X'W$ es análoga a la matriz sombrero y los grados de libertad se pueden definir como:
+
+- $gl_1 = tr(S) = \nu_1$
+- $gl_2 = tr(SS')$
+- $gl_3 = tr(2S-SS')$
+
+El modelo ajustado con polinomios locales nos da un poco más de estructura.
+
+```{r}
+head(data.frame(y = x, yhat = fitted(m1)))
+qqnorm(residuals(m1))
+# Con los grados de libertad estimados, se puede obtener el estimador de sigma:
+(sigma <- sqrt(sum((fitted(m1)-x)^2)/(length(x)-as.numeric(m1$dp["df2"]))))
+# Podemos hacer predicciones de las observaciones
+predict(m1, c(10,20))
+```
+
+Los dos puntos clave de la regresión de polinomios locales son: 
+
+1. Seleccionar $p$: se recomienda usar un órden impar: Si $p$ es impar entonces el polinomio tiene la misma varianza que el polinomio de orden $p+1$ pero con menor sesgo.
+2. Seleccionar $h$ o $nn$: la selección se puede realizar a través de validación cruzada. 
+
+### Elección del ancho de banda.
+
+- Podemos usar validación cruzada para estimar el parámetro $h$.Por ejemplo, utilizando NW:
+
+```{r}
+cv.ksmooth <- function(x, y, l = 100){
+  h_seq <- seq(from = 0.1, to = max(x)/4, length.out = l) # evaluación en valores de h
+  n <- length(y) # número de observaciones
+  CV_err_h <- numeric(length(h_seq))  # Vectores de valores 
+  for(j in 1:length(h_seq)){
+    CV_err <- numeric(n)
+    for(i in 1:n){
+       fit <- ksmooth(x = x[-i], y = y[-i], bandwidth = h_seq[j], x.points = x[i])$y
+       CV_err[i] <- (fit - y[i])^2
+    }
+    CV_err_h[j] <- mean(CV_err)
+  }
+  return(list(h = h_seq, CV_h = CV_err_h, h_star = h_seq[which(CV_err_h == min(CV_err_h, na.rm = T))]))
+}
+```
+
+```{r}
+a <- cv.ksmooth(time(x),x)
+plot(a$h, a$CV_h, col = "green4", type = "l", lty =1 )
+plot(time(x), x, pch = 16, cex = 0.5)
+lines(ksmooth(time(x), x,bandwidth = a$h_star), col = "blue", lwd = 2)
+a$h_star
+```
+
+En el caso de polinomio local es similar, elegimos el span: 
+
+```{r}
+cv.locfit <- function(x, y, l = 10, min = 0, max = 1){
+  nn_seq <- seq(from = min, to = max, length.out = l) # evaluación en valores de h
+  n <- length(y) # número de observaciones
+  CV_err_nn <- numeric(length(nn_seq))  # Vectores de valores 
+  for(j in 1:length(nn_seq)){
+    CV_err <- numeric(n)
+    for(i in 1:n){
+       fit <- fitted(locfit(y[-i] ~ lp(x[-i], nn = nn_seq[j], deg = 3)))
+       CV_err[i] <- (fit[i] - y[i])^2
+    }
+    CV_err_nn[j] <- mean(CV_err,na.rm = T)
+  }
+  return(list(nn = nn_seq, CV_nn = CV_err_nn, nn_star = nn_seq[which(CV_err_nn == min(CV_err_nn, na.rm = T))]))
+  }
+```
+
+
+```{r}
+a <- cv.locfit(time(x),x, min = 0.1, max = 0.5, l=10)
+plot(a$nn, a$CV_nn, col = "green4", type = "l", lty =1 )
+plot(time(x), x, pch = 16, cex = 0.5)
+m1 <- locfit(x ~ lp(t, nn = a$nn_star, deg = 3))
+lines(m1, col = "blue", lwd = 2)
+a$nn_star
+```
+
+### validación cruzada generalizada
+
+Podemos utilzar la función `gcv` del paquete `locfit` que calcula una versión generalizada de validación cruzada, para encontrar el valor del bandwidth óptimo para modelos polinomiales.
+
+```{r}
+library(locfit)
+den <- read.csv("https://raw.githubusercontent.com/jvega68/R_avanzado/refs/heads/master/datos/denom.csv")
+x <- den$x100
+t <- time(x)
+plot(t,x, type = "l")
+# generamos un grid de valores h a probar
+h <- seq(0.1,0.5,by = 0.01)
+n1 <- length(h)
+g <- matrix(nrow = n1, ncol = 4) # estructura para guardar resultados
+for(k in 1:n1) g[k,] <- gcv(x ~ lp(t, nn = h[k], deg = 3))
+plot(h, g[,4],type = "o", pch = 16)
+(h_star <- h[which(g[,4] == min(g[,4]))])
+```
+
+## Ajuste para dos variables
+
+Los modelos de regresión no paramétrica se pueden extender sin problemas a casos multivariados. Como ejemplo, consideremos los datos de Prestigio ocupacional y consideremos dos variables.
+
+```{r}
+datos <- read.delim("https://raw.githubusercontent.com/jvega68/ENP/main/datos/Prestige.txt", 
+                    sep = "",
+                    header =T)
+head(datos)
+```
+
+Ajustando el modelo con las variables de ingreso y educación
+
+```{r}
+library(locfit)
+par(mfrow = c(1,2))
+m2 <- locfit(prestige ~ lp(income/1000, education, nn  = 0.8, deg = 3), data = datos)
+plot(m2, type = "contour") # puede ser contour, persp, image
+plot(m2, type = "persp")
+```
+
+
+También podemos aplicar un modelo loess para más dimensiones
+
+```{r}
+(ml <- loess(prestige ~ I(income/1000) + education, span = 0.4, data= datos))
+# aproximación de R^2
+cor(datos$prestige,ml$fitted)
+```
+
+Creamos un grid para evaluar el ajuste
+
+```{r}
+library(RColorBrewer)  # para crear una paleta de colores 
+grid.inc <- seq(min(datos$income), max(datos$income), length.out = 50)
+grid.edu <- seq(min(datos$education), max(datos$education), length.out = 50)
+grid.mar <- list(income = grid.inc, education = grid.edu)
+# obten valores interpolados
+prestige.ip <- predict(ml, expand.grid(grid.mar))
+prestige.z <- matrix(prestige.ip, length(grid.inc), length(grid.edu))
+# grafica los valores interpolados
+nclr <- 8
+plotclr <- brewer.pal(nclr, "PuOr")
+plotclr <- plotclr[nclr:1] # ordena colores
+image(grid.inc, grid.edu, prestige.z, col=plotclr)
+contour(grid.inc, grid.edu, prestige.z, add=TRUE)
+with(datos, points(income, education, pch = 19,col = "yellow"))
+```
+
+
+## Ejemplo práctico completo de aplicación
+
+La siguiente base de datos proviene de la Red Automática de Monitoreo Atmosférico (RAMA) se puede encontrar en la siguiente liga: [RAMA](http://www.aire.cdmx.gob.mx/default.php?opc=%27aKBh%27).
+
+
+```{r}
+library(readxl)
+tmp_file <- tempfile(fileext = ".xls")
+url <- "https://github.com/jvega68/R_avanzado/raw/refs/heads/master/datos/2022O3.xls"
+download.file(url, destfile = tmp_file,mode = "wb")
+d <- read_xls(tmp_file,na = "-99")
+# Agregamos una columna que combine la fecha y la hora
+d$D <- as.POSIXct(paste(as.character(d$FECHA),d$HORA), format = "%Y-%m-%d %H")
+dias <- 1 # días a considerar para el modelo
+d <- d[1:(24*dias),]
+plot(d$D, d$CUA, type = "p", main = "Nivel de ozono en estación Cuauhtémoc")
+rug(d$D,  side = 1)
+rug(d$CUA, side = 2)
+```
+
+Queremos construir un modelo "óptimo" para un día, junto con una estimación del error y una banda de confianza. Noten que en este ejemplo, los datos en el eje x son equidistantes, en este sentido, es como un diseño experimental, aunque en realidad es una serie de tiempo.
+
+### LOESS
+
+Para la función `loess` no tenemos una manera automática de estimar el span. Hay que hacerlo manualmente como lo hicimos previamente. En este caso se puede tratar por ensayo y error alrededor de un valor de 0.5. Por otra parte, el objeto loess regresa los valores que se necesitan para realizar la validación cruzada.
+
+```{r}
+plot(d$D, d$CUA, type = "p", main = "Nivel de ozono en estación Cuauhtémoc")
+rug(d$D,  side = 1)
+rug(d$CUA, side = 2)
+
+grid_span <- c(0.2,0.3,0.4,0.5,0.6,0.7)
+for(h in grid_span){
+  m1 <- loess(d$CUA ~ as.numeric(d$D), span = h, degree = 1)
+  lines(d$D,fitted(m1), col = which(grid_span == h), lwd = 3)
+}
+legend("topright",col = 1:6, legend = grid_span[1:6], lty = 1, lwd = 3)
+```
+
+Intervalo de confianza para loess. Usando h = 0.6: Podemos usar la función del paquete `spatialEco`, que permite obtener intervalos de confianza normales como vía bootstrap
+
+```{r}
+library("spatialEco")
+
+h <- 0.6
+# noten el órden las variables (y,x)
+m1a <- loess.ci(d$CUA, as.numeric(d$D), span = h, degree = 1, plot = T)
+m1 <- loess(d$CUA ~ as.numeric(d$D), span = h, degree = 1)
+lines(d$D,fitted(m1), col = which(grid_span == h), lwd = 3)
+m1  # Características del modelo ajustado
+m1$s # error estándar
+qqnorm(m1$residuals) # comportamiento de los residuales 
+
+# Intervalo basado en bootstrap Noten el cambio de órden en las variables (x,y)
+mb <- loess.boot(as.numeric(d$D), d$CUA, nreps = 1500, span = h, degree = 1)
+plot(mb)
+mb$fit$stddev # desviación estándar en cada punto
+```
+
+Finalmente, podemos hacer predicciones del modelo para nuevas observaciones. Sólo hay que cuidar los valores del eje x.
+
+```{r}
+predict(m1, newdata = c(1641020450, 1641079000),se = T)
+```
+
+
+
+
+## Splines de interpolación
+
+
+### Ejemplo 1
+
+```{r}
+par(mfrow= c (1,2))
+x <- c(10, 40, 40, 20, 60, 50, 25, 16, 30, 60, 80, 75, 65, 100)
+y <- c(85, 95, 65, 55, 100, 70, 35, 10, 10, 36, 60, 65, 55, 50)
+plot(x,y)
+u <- 1:length(x)
+uu <- seq(1, length(u), length = 250)
+
+# funciones para ajustar splines interpolantes: splinefun
+fit1 <- splinefun(u,x) 
+xx <- fit1(uu)
+fit2 <- splinefun(u,y) 
+yy <- fit2(uu)
+plot(x, y, axes = F, xlab = "", ylab = "", ylim = c(0, 100), xlim = c(0, 100))
+lines(xx, yy, type = "l")
+```
+
+
+### Ejemplo 2
+
+```{r}
+par(mfrow=c(1,1))
+x <- 4*pi*c(0, 1, runif(20))
+y <- sin(x)
+fit <- splinefun(x,y)
+xx <- seq(0, max(x), length = 100) # nodos para ajuste
+yy <- fit(xx)
+plot(x, y)
+lines(xx, yy, lwd=3, col="red")
+```
+
+
+### Ejemplo 3: interpolación en dos dimensiones
+
+```{r}
+options(rgl.useNULL = TRUE) # Suppress the separate rgl window
+library(rgl)
+rgl::setupKnitr(autoprint = TRUE) # Automatically embed rgl plots
+library(akima) # uso de la función bicubic
+# Grid y evaluación de la función en el grid
+x <- seq(-1, 1, by = 0.20)
+y <- seq(-1, 1, by = 0.20)
+z <- outer(x, y, function(x,y){ sin(10*(x^2 + y^2)) })
+# creación del grid
+xy <- expand.grid(seq(-1, 1, length = 80), seq(-1, 1, length = 80))
+fit <- bicubic(x, y, z, xy[,1], xy[,2])
+xx <- seq(-1, 1, length = 80)
+yy <- seq(-1, 1, length = 80)
+zz <- matrix(fit$z, nrow = 80)
+#grafica de superficie:
+#persp(x = xx, y = yy, z = zz, col = "lightblue", phi = 45, theta = -60,
+#      xlab = "X", ylab = "Y", zlab = "Z")
+plot3d(fit$x,fit$y,fit$z)
+#gráfica de contorno:
+image(x = seq(-1, 1, length = 80), y = seq(-1, 1, length = 80),
+z = matrix(fit$z, nrow = 80), xlab = "X", ylab = "Y")
+contour(x = seq(-1, 1, length = 80), y = seq(-1, 1, length = 80),
+z = matrix(fit$z, nrow = 80), add = TRUE)
+```
+
+
+
