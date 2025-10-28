@@ -1,0 +1,121 @@
+---
+title: 'R avanzado. Sesión 5: Optimización de varias variables'
+author: "Jorge de la Vega"
+institute: ITAM
+lang: es
+date: today
+format:
+  html:
+    page-layout: full
+    embed-resources: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(rgl)
+knitr::opts_chunk$set(echo = TRUE, fig.align = "center", fig.height = 5)
+setupKnitr(autoprint = T)
+knitr::knit_hooks$set(webgl = hook_webgl)
+```
+
+# Consideraciones generales 
+
+- Usualmente los problemas se plantean como problemas de minimización. Para encontrar máximos, buscamos el mínimo del negativo de una función. 
+
+Dada la dificultad de optimización en múltiples dimensiones, se han desarrollado muchos paquetesy funciones en `R`, cada uno con sus fortalezas y debilidades. Una sugerencia a aplicar (Brian Borchers, profesor de New Mexico Tech que investiga en temas de optimización):
+
+- Si la función es suave y diferenciable, aplicar `BFGS` (Broyden-Fletcher-Goldfarb-Shanno) o `L-BFGS-B`
+- Si se tienen problemas de memoria en la computadora, usar también `CG`
+- En otros casos, usar `Nelder-Mead` (solo en tareas de baja dimensión).
+- Si la función objetivo no es suficientemente suave, ninguno de estos enfoques funcionará. 
+
+Todos estos métodos están en la función `optim`
+
+- Por otro lado, si se busca por óptimos globales, primero se puede intentar un solver global (`GenSA`, `DEoptim`, `psoptim`, `CMAES`, ...)
+- Para problemas de mínimos cuadrados, usar solvers especializados, ya que la función es conveza y tiene un mínimo global. 
+
+
+La función `optim` usa por default Nelder-Mead ya que es un método robusto pero lento, que trabaja bien para funciones no diferenciables. Requiere que la función se de con input un vector, y regresa un escalar. 
+
+
+# Ejemplos para funciones de varias variables
+
+### Ejemplo 1
+
+Consideremos la siguiente función que surge en procesos químicos industriales: 
+
+$$ f(x,y) = \frac{1}{x} + \frac{1}{y} + \frac{1-y}{y(1-x)} + \frac{1}{(1-x)(1-y)} \qquad x,y\in (0,1)$$
+
+```{r}
+f <- function(x,y){
+  1/x + 1/y + (1-y)/(y*(1-x)) + 1/((1-x)*(1-y))
+}
+x <- y <- seq(0.1,0.9, by = 0.02)
+z <- outer(x,y,f)
+persp3d(x,y,z, col="red")
+```
+
+Redefinir la función para `optim`
+
+```{r}
+f <- function(z){
+  x <- z[1]
+  y <- z[2]
+  1/x + 1/y + (1-y)/(y*(1-x)) + 1/((1-x)*(1-y))
+}
+optim(c(0.5,0.5),f)
+```
+
+La lectura de la salida es la siguiente: 
+
+- `par` da el punto donde se alcanza el mínimo
+- `value` es el valor de la función en el mínimo
+- `counts` cuenta el número de iteraciones que se hicieron del algoritmo. Si se provee un gradiente, dice cuántas veces se evaluó el gradiente. 
+- `convergence` indica si se alcanzó convergencia en el algoritmo.
+
+
+### Ejemplo 2
+
+Otra función es la función banana
+
+$$f(x,y) = 100(y-xy)^2 + (1-x)^2$$
+
+```{r}
+f <- function(x,y){
+  100*(y-x^2)^2+ (1-x)^2
+}
+x <- y <- seq(-1.2,1, by = 0.1)
+z <- outer(x,y,f)
+persp3d(x,y,z, col="red")
+```
+
+
+Redefinir para `optim`
+
+```{r}
+f <- function(z){
+  x <- z[1]
+  y <- z[2]
+  100*(y-x^2)^2+ (1-x)^2
+}
+optim(c(0,0),f)
+```
+
+
+### optim con el método BFGS
+
+A veces se puede obtener una solución más rápida y adecuada si se cuenta con una forma analítica del gradiente de la función. Este es el enfoque de BGFS que usa una adaptación del método de Newton, aproximando $f(x)$ por una función cuadrática alrededor del valor actual del vector $x$ y tomando luego un paso hacia el mínimo (o máximo) de la función cuadrática. En el óptimo, el gradiente es 0. 
+
+```{r}
+grad <- function(z){
+  x <- z[1]
+  y <- z[2]
+  c(-400*x*(y-x^2)-2*(1-x), 200*(y-x^2))
+}
+
+optim(c(-1.2,1),f, grad, method = "BFGS", hessian = F) # si se quiere el hessiano evaluado en el punto, se pone T
+```
+
+Aquí la función se evalúo 110 veces, y 43 veces el gradiente, mientras que con el método de Nelder-Mead se hicieron 169 evaluaciones.
+
