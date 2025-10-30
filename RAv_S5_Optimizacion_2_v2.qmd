@@ -1,0 +1,462 @@
+---
+title: 'R avanzado. Sesión 5: Optimización de varias variables'
+author: "Jorge de la Vega"
+institute: ITAM
+lang: es
+date: today
+format:
+  html:
+    page-layout: full
+    embed-resources: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(rgl)
+options(width=120)
+knitr::opts_chunk$set(echo = TRUE, fig.align = "center", fig.height = 5)
+setupKnitr(autoprint = T)
+knitr::knit_hooks$set(webgl = hook_webgl)
+```
+
+# Consideraciones generales 
+
+- Usualmente los problemas se plantean como problemas de minimización. Para encontrar máximos, buscamos el mínimo del negativo de una función. 
+
+Dada la dificultad de optimización en múltiples dimensiones, se han desarrollado muchos paquetes y funciones en `R`, cada uno con sus fortalezas y debilidades. Una sugerencia a aplicar (Brian Borchers, profesor de New Mexico Tech que investiga en temas de optimización):
+
+- Si la función es suave y diferenciable, aplicar `BFGS` (Broyden-Fletcher-Goldfarb-Shanno) o `L-BFGS-B` (esta versión incluye límites inferiores y superiores)
+- Si se tienen problemas de memoria en la computadora, usar también `CG` (Gradiente conjugado)
+- En otros casos, usar `Nelder-Mead` (solo en tareas de baja dimensión).
+- Si la función objetivo no es suficientemente suave, ninguno de estos enfoques funcionará. 
+
+Todos estos métodos están en la función `optim`. También incluye otros métodos: 
+
+- `SANN` (Simulated Annealing, que es un método de optimización estocástico)
+- `Brent` (método para un sólo parámetro, usa `optimize`) Este método combina método de bisección, método de secantes y algoritmo para encontrar raíces.
+
+- Por otro lado, si se busca por óptimos globales, primero se puede intentar un solver global (`GenSA`, `DEoptim`, `psoptim`, `CMAES`, ...)
+- Para problemas de mínimos cuadrados, usar solvers especializados, ya que la función es conveza y tiene un mínimo global. 
+
+
+La función `optim` usa por default Nelder-Mead ya que es un método robusto pero lento, que trabaja bien para funciones no diferenciables. Requiere que la función se de con input un vector, y regresa un escalar. 
+
+# Ejemplos para funciones de varias variables
+
+## `optim` con Nelder-Mead (default)
+Este método, que también se conoce con el nombre de **método simplex descendiente** no requiere que se de nada adicional a la función objetivo y un valor inicial. 
+
+### Ejemplo 1
+
+Consideremos la siguiente función que surge en procesos químicos industriales: 
+
+$$ f(x,y) = \frac{1}{x} + \frac{1}{y} + \frac{1-y}{y(1-x)} + \frac{1}{(1-x)(1-y)} \qquad x,y\in (0,1)$$
+
+```{r}
+f <- function(x,y){
+  1/x + 1/y + (1-y)/(y*(1-x)) + 1/((1-x)*(1-y))
+}
+x <- y <- seq(0.1,0.9, by = 0.02)
+z <- outer(x,y,f)
+persp3d(x,y,z, col="red")
+```
+
+Redefinir la función para `optim`, que requiere como argumento de la función un vector y no las entradas individuales. 
+
+```{r}
+f <- function(z){
+  x <- z[1]
+  y <- z[2]
+  1/x + 1/y + (1-y)/(y*(1-x)) + 1/((1-x)*(1-y))
+}
+optim(c(0.5,0.5),f)
+```
+
+La lectura de la salida es la siguiente: 
+
+- `par` da el punto donde se alcanza el mínimo
+- `value` es el valor de la función en el mínimo
+- `counts` cuenta el número de iteraciones que se hicieron del algoritmo. Si se provee un gradiente, dice cuántas veces se evaluó el gradiente. 
+- `convergence` indica si se alcanzó convergencia en el algoritmo. El código es 0 para éxito en la convergencia.  
+
+
+### Ejemplo 2
+
+Otra función es la función banana, que se utiliza mucho como benchmark para comparar métodos:
+
+$$f(x,y) = 100(y-xy)^2 + (1-x)^2, \qquad x,y\in \mathbb{R}$$
+
+```{r}
+f <- function(x,y){
+  100*(y-x^2)^2+ (1-x)^2
+}
+x <- y <- seq(-1.2,1, by = 0.1)
+z <- outer(x,y,f)
+persp3d(x,y,z, col="red")
+```
+
+
+Redefiniendo para `optim`:
+
+```{r}
+f <- function(z){
+  x <- z[1]
+  y <- z[2]
+  100*(y-x^2)^2+ (1-x)^2
+}
+optim(par = c(0,0),fn = f)
+```
+
+
+## `optim` con el método BFGS
+
+A veces se puede obtener una solución más rápida y adecuada si se cuenta con una forma analítica del gradiente de la función. Este es el enfoque de BGFS que usa una adaptación del método de Newton, aproximando $f(x)$ por una función cuadrática alrededor del valor actual del vector $x$:
+$$f(x_k+h) = f(x_k) + f'(x_k)h + \frac{1}{2}f''(x_k)h^2 $$
+
+donde $f'(x)=\nabla f(x)$ es el gradiente de $f$ y $f''(x)=\nabla^2f(x)=H_f(x)$ es la matriz hessiana de $f$, y tomando luego un paso hacia el mínimo (o máximo) de la función cuadrática. En el óptimo, el gradiente es 0. 
+
+El método de Newton es un método iterativo para encontrar las raíces de una función doblemente diferenciable y se buscan los valores críticos $x$ tal que $f'(x)=0$
+
+La siguiente función calcula el gradiente de la función y lo evalúa en un punto: 
+```{r}
+grad <- function(z){
+  x <- z[1]
+  y <- z[2]
+  c(-400*x*(y-x^2)-2*(1-x), 200*(y-x^2))
+}
+
+optim(par = c(-1.2,1),
+      fn = f, 
+      gr = grad, 
+      method = "BFGS", 
+      hessian = F) # si se quiere el hessiano evaluado en el punto, se pone T
+```
+
+Aquí la función se evalúo 110 veces, y 43 veces el gradiente, mientras que con el método de Nelder-Mead se hicieron 169 evaluaciones.
+
+
+## Paquete optimx
+
+Este paquete es un envoltorio (_wrapper_) para varias rutinas de optimización. Uno de los propósitos del  paquete es unificar las llamadas a varios optimizadores útiles en una sintaxis común y permitir comparar su desempeño. 
+
+Alguno de los optimizadores que incluye son los siguientes: `Nelder-Mead`, `BFGS`, `CG`, `L-BFGS-B`, `nlm`, `nlminb`, `spg`, `ucminf`, `newuoa`, `bobyqa`, `nmkb`, `hjkb`, `Rcgmin`,  `Rvmmin`.
+
+
+Consideremos un ejemplo usando de nuevo la función banana: 
+
+```{r, message=F, warning=F}
+require(optimx)
+
+f <- function(x){
+  # banana de Rosenbrock
+  u <- x[1]
+  v <- x[2]
+  100*(v-u^2)^2 + (1-u)^2
+}
+
+
+grad <- function(z){
+  # gradiente de la función banana
+  x <- z[1]
+  y <- z[2]
+  c(-400*x*(y-x^2)-2*(1-x), 200*(y-x^2))
+}
+
+
+x0 <- c(-1.2,1)
+
+ajuste <- optimx(par=x0, fn = f, gr = grad, control=list(all.methods = T))
+summary(ajuste, order = value)
+```
+
+
+
+
+# Ejemplos de problemas de estimación vía máxima verosimilitud
+
+La verosimilitud trata de maximizar la probabilidad de que una distribución conjunta con ciertos parámetros, resulte en la muestra obtenida. Para esto se define la _función de verosimilitud_
+
+
+::: {#def-fmv style="color: blue;"}		
+## Función de verosimilitud
+
+Sea $X_1,\ldots, X_n$ una muestra aleatoria (independiente e idénticamente distribuída, o iid). de una población con función de densidad $f(x|\theta)$. Se define la función de verosimilitud como la función de densidad conjunta de la muestra, vista como función del parámetro $\theta$: 
+			
+$$L(\theta) = f_{X_1,\ldots,X_n}(x_1,\ldots,x_n|\theta) = \prod_{i=1}^nf_{X_i}(x_i|\theta)$$
+			
+El estimador máximo-verosímil es un estimador $\hat{\theta}=T(X_1,\ldots.X_n)$ tal que para cualquier $\theta\in \Theta$, se tiene que $L(\hat{\theta})\geq L(\theta)$
+:::
+		
+Entonces para encontrar el estimador máximo-verosímil, se tiene que maximizar la función de verosimilitud $L(\theta)$. Esto se puede hacer tomando las derivadas de los parámetros y formando un sistema de ecuaciones para encontrar los valores óptimos. 
+		
+En muchas ocasiones, es mejor tomar la log-verosimilitud $l(\theta) = \log(L(\theta))$, ya que tienen el mismo máximo. 
+
+### E1: Estimadores de verosimilitud para una distribución Gamma. 
+
+En muchos problemas reales, no podemos encontrar los estimadores máximo-verosímiles de manera analítica,  por lo que se requiere resolver por métodos numéricos. En `R` hay diferentes funciones que sirven para resolver los problemas de optimización.
+		
+Sea $X_1,\ldots,X_n \sim Gamma(\alpha,\beta)$ donde  
+$$f(x|\alpha,\beta) = \frac{1}{\Gamma(\alpha)\beta^{\alpha}}x^{\alpha-1}e^{-x/\beta}I(x>0).$$ 
+
+La función de verosimilitud es: 
+		
+$$L(\alpha,\beta) = \prod_{i=1}^n \frac{1}{\Gamma(\alpha)\beta^{\alpha}}x^{\alpha-1}e^{-x/\beta}$$
+
+Obteniendo la log-verosimilitud: 
+
+\begin{eqnarray*}
+	l(\alpha,\beta) &=& \sum_{i=1}^n\left( -\log(\Gamma(\alpha)) -\alpha\log(\beta) + (\alpha-1)\log(x_i)-x_i/\beta \right) \\
+	                &=& -n\log(\Gamma(\alpha)) - n\alpha\log(\beta) + (\alpha-1)\sum_{i=1}^n\log(x_i) - \sum_{i=1}^nx_i/\beta
+\end{eqnarray*}
+
+Esta ecuación como función de $\alpha$ y $\beta$ se tiene que resolver numéricamente. El argumento de control es para que la función maximice en lugar de minimizar.
+
+Obviamente necesitamos contar con una muestra aleatoria de la cual vamos a estimar los parámetros. Aquí generamos por simulación una muestra de gammas y tratamos de reproducir los parámetros estimados. La semilla aleatoria se fija para reproducibilidad
+
+```{r}
+set.seed(19681206) # Fijamos semilla aleatoria para reproducibilidad 
+x <- rgamma(100,shape = 2, scale = 5)  # Se genera una muestra aleatoria gamma(2,5)
+head(x)
+```
+
+Definimos la función de log-verosimilitud
+```{r}
+# Función de log-verosimilitud
+lgamma <- function(th,x){
+			a <- th[1]
+			b <- th[2]
+			n <- length(x)
+			-(-n*log(gamma(a)) - n*a*log(b) + (a-1)*sum(log(x)) - (1/b)*sum(x))
+		}
+
+(thoptim <- optim(c(1,3), lgamma, x = x)$par)  # valores óptimos.
+```
+
+
+```{r}
+# Distribución empirica
+plot(ecdf(x))
+curve(pgamma(x, shape = thoptim[1], scale = thoptim[2]),
+             from = 0, to = 40, add=T, col = "red", lwd = 4)
+```
+
+
+### E2: Ajuste de un modelo de mezclas
+
+Los tiempos de espera entre erupciones del geiser 'Old Faithful' en el Parque Nacional Yosemith son fuertemente bimodales. 
+
+```{r}
+library(MASS)
+with(geyser, 
+     truehist(waiting, xlim = c(35,115), ymax = 0.04, h=5))
+espera.dens <- density(geyser$waiting, n = 512, width = "SJ")
+lines(espera.dens, lty = 2, lwd=2)
+```
+
+En estos datos, parece razonable ajustar una mezcla de normales para la distribución marginal de los tiempos de espera entre erupciones. 
+
+En este ejemplo, como las observaciones forman una serie de tiempo, no son independientes; de hecho tienen autocorrelación negativa con la observación previa:
+
+```{r}
+acf(geyser$waiting)
+```
+
+Pero para efectos de la estimación, ignoraremos este hecho por simplicidad y ajustaremos la función vía máxima verosimilitud. El vector $\theta$ tiene 5 componentes: el coeficiente de la mezcla $p$, y los parámetros de dos normales: 
+
+$$l(p,\mu_1,\sigma_1,\mu_2,\sigma_2) = \sum_{i=1}^n\log\left[ \frac{p}{\sigma_1}\phi\left(\frac{x_i-\mu_1}{\sigma_1}\right) + \frac{1-p}{\sigma_2}\phi\left(\frac{x_i-\mu_2}{\sigma_2}\right)\right]$$
+
+Aquí estimamos los parámetros minimizando $-l$. 
+
+En este ejemplo podemos usar información de la primera y segunda derivada y usar la función `deriv` que calcula la derivada simbólica de expresiones simples para definir la función objetivo. Esta función puede usar las funciones de normales `pnorm` y `dnorm` con un solo argumento, por lo que debemos pasarlo en el formato `pnorm((x-u/s))` en lugar de `pnorm(x,u,s)`. Podemos generar una función que calcula los sumandos de $-l$ y regresa la primera y segunda derivada de cada sumando: 
+
+```{r}
+lmix2 <- deriv(
+              ~ -log((p/s1)*dnorm((x-u1)/s1) + ((1-p)/s2)*dnorm((x-u2)/s2)),
+              c("p","u1","s1","u2","s2"),
+              function(x,p,u1,s1,u2,s2) NULL)
+
+```
+
+A partir de la gráfica, podemos dar valores algunos valores iniciales, por ejemplo: 
+
+```{r}
+(p0 <- c(p = mean(geyser$waiting < 70), u1 = 50, s1 = 5, u2 = 80, s2 = 5))
+```
+
+#### Usando la función `nlminb`
+
+La rutina de minimización más general de `R` es `nlminb` que puede encontrar un mínimo local de una función que es doblemente diferenciable en un hipercubo del espacio parametral. Se pueden dar ya sea el gradiente o el gradiente más el hessiano. Si no se da, se aproxima por diferencias finitas. 
+
+El algoritmo subyacente es un optimizador quasi-Newton o Newton si se da el hessiano. Entonces con este algoritmo podemos ajustar la densidad mezcla y forzar las restricciones.
+
+
+Por ejemplo, sin derivadas: 
+
+```{r}
+mix.obj <- function(p,x){
+  e <- (p[1]/p[3]) * dnorm((x-p[2])/p[3]) + ((1-p[1])/p[5])*dnorm((x-p[4])/p[5]) 
+  return(-sum(log(e)))
+}
+
+(mix.n10 <- nlminb(start = p0,
+                  objective = mix.obj, 
+                  scale = c(10,rep(1,4)),
+                  lower = c(0,-Inf,0,-Inf,0),  # valores mínimos de los parámetros
+                  upper = c(1,rep(Inf,4)),     # valores máximos de los parámetros
+                  x = geyser$waiting))
+```
+
+Aquí se usó el argumento `scale` para establecer la longitud de los pasos en el primer parámetro para que sean más chicos que los de los otros parámetros ($p\in (0,1)$) para que se acelere la convergencia
+
+::: {.callout-note}
+#### Recomendación:
+Es útil establecer la escala de tal manera que el rango de incertidumbre en (escala $\times$ parámetro) esté cerca de 1. 
+:::
+
+Usando una derivada (gradiente): 
+
+```{r}
+# la diferencia con la previa lmix2 es que ésta calcula el hessiano
+lmix2a <- deriv(
+            ~ -log((p/s1)*dnorm((x-u1)/s1) + ((1-p)/s2)*dnorm((x-u2)/s2)),
+            c("p","u1","s1","u2","s2"), hessian = T,
+            function(x,p,u1,s1,u2,s2) NULL) 
+
+mix.gr <- function(p,x){
+  u1 <- p[2]
+  s1 <- p[3]
+  u2 <- p[4]
+  s2 <- p[5]
+  p <-  p[1]
+  colSums(attr(lmix2a(x,p,u1,s1,u2,s2), "gradient"))
+}
+
+(mix.nl1 <- nlminb(start = p0, 
+                  objective = mix.obj, 
+                  gradient = mix.gr,
+                  scale = c(10, rep(1,4)),
+                  lower = c(0,-Inf, 0, -Inf, 0),
+                  upper = c(1, rep(Inf,4)),
+                  x = geyser$waiting))
+```
+
+Usando dos derivadas (gradiente y hessiano)
+```{r}
+mix.gr <- function(p,x){
+  e <- lmix2a(x, p[1], p[2], p[3], p[4], p[5])
+  g <- colSums(attr(e, "gradient"))
+  return(g)
+}
+
+mix.hess <- function(p,x){
+  e <- lmix2a(x, p[1], p[2], p[3], p[4], p[5])
+  H <- colSums(attr(e, "hessian"), 2)
+  return(H)
+}
+
+(mix.nl2 <- nlminb(start = p0, 
+                  objective = mix.obj, 
+                  gradient = mix.gr,
+                  hessian = mix.hess,
+                  scale = c(10, rep(1,4)),
+                  lower = c(0,-Inf, 0, -Inf, 0),
+                  upper = c(1, rep(Inf,4)),
+                  x = geyser$waiting))
+
+```
+
+Agregamos la solución encontrada al histograma para comparar: 
+
+```{r}
+with(geyser, 
+     truehist(waiting, xlim = c(35,115), ymax = 0.04, h=5))
+wait.dens <- density(geyser$waiting, n = 512, width = "SJ")
+lines(wait.dens, lty = 2, lwd=2)
+
+dmix2 <- function(x, p, u1, s1, u2, s2) p*dnorm(x,u1,s1) + (1-p)*dnorm(x, u2, s2)
+parametros <- mix.nl2$par
+tiempos <- list(x = wait.dens$x,
+                y = dmix2(wait.dens$x, 
+                          parametros[1], 
+                          parametros[2], 
+                          parametros[3], 
+                          parametros[4], 
+                          parametros[5]))
+lines(tiempos, col = "navy", lwd = 3)
+legend("topright", c("Normal","No paramétrica"), 
+       lty=c(1,2), col = c("navy","black"), lwd = 3)
+```
+
+
+### Algoritmo EM
+
+El algoritmo de _Expectation-Maximization_ (Dempster, Laird & Rubin, 1977) es un método general de optimización que se aplica usualmente cuando hay datos incompletos. 
+
+- Usualmente es lento, pero muy confiable para encontrar máximos globales. 
+- Se inicia con un estimado del parámetro objetivo y luego se alterna entre dos pasos: el paso E y el paso M:
+  
+  - **paso E**: se calcula la esperanza condicional de la función objetivo, que usualmente es una log-verosimilitud dados los datos observados y los parámetros estimados actualmente: $Q(\theta; \theta_{t-1}) = E(l(\theta)| X,\theta_{t-1})$.
+  
+  - **Paso M**: se maximiza la esperanza condicional con respecto al parámetro objetivo y se actualizan los parámetros: $\theta_{t+1} = \max_{\theta} Q(\theta,\theta_{t})$, y se hace $\theta_{t}=\theta_{t+1}$
+
+- El algoritmo sigue hasta que se alcanza convergencia. 
+
+Por ejemplo, consideremos lel problema de estimar los parámetros de una forma cuadrática de variables normales centradas: 
+$$Y = \sum_{i=1}^k \lambda_iZ_i^2$$
+donde $Z_i\sim N(0,1)$ independientes, y $\lambda_1>\lambda_2>\cdots > \lambda_k>0$. El problema es equivalente a un problema de mezcla de gammas, ya que $\lambda Z^2 \equiv \lambda \chi^2_{1}$ que a su vez es equivalente a una $\Gamma(1/2,1/(2\lambda))$. Entonces $Y$ es una mezcla de k gammas independientes:
+$$Y \stackrel{d}{=} \sum_{i=1}^k\frac{1}{k}Gamma\left(\frac{1}{2},\frac{1}{2\lambda_i}\right)$$
+
+En este caso la log-verosimilitud es $l(\lambda)=\sum_{i=1}^kf_i(x|\lambda)$. 
+
+Supongamos que $k=3$ y que se tiene una muestra observada de $m$ observaciones.
+
+El algoritmo EM primero actualiza la probabilidad posterior $p_{ij}$ de que la observación $y_i$ viene de la población $j$. En el paso $r$:
+$$ p_{ij}^{(r)} = \frac{\frac{1}{k}f_j(y_i|y,\lambda^{(r)})}{\sum_{m=1}^k\frac{1}{k}f_m(y_m|y,\lambda^{(r)})}$$ 
+donde $\lambda^{(r)}$ es el estimador del paso $r$ de los parámetros $\{\lambda_j\}$ y $f_j(y_i|y,\lambda^{(r)})$ es la densidad Gamma con parámetros $1/2$ y $1/(2\lambda^{(r)})$ evaluada en $y_i$. Como la media de la $j-$ésima componente es $\lambda_j$, así que la  ecuación a actualizar es
+$$\mu_j^{(r+1)} = \frac{\sum_{l=1}^mp_{ij}^{(r)}y_i}{\sum p_{ij}^{(r)}}$$
+
+A continuación generamos una muestra de $m=2000$ observaciones de la mezcla con parámetros $\lambda_1=0.6$, $\lambda_2=0.25$ y $\lambda_3=0.15$.
+
+```{r}
+m <- 2000
+set.seed(1968)
+lambda <- c(0.6, 0.25, 0.15) # la tasa es 1/(2lambda)
+lam <- sample(lambda, size = m, replace=T)
+y <- rgamma(m, shape = 0.5, rate = 1/(2*lam))
+```
+
+
+Este código construye el algoritmo EM
+
+```{r}
+N <- 10000  # max número de iteraciones del algoritmo
+L <- c(0.5,0.4,0.1)  # valor inicial de lambda
+tol <- sqrt(.Machine$double.eps) # tolerancia 
+L.old <- L + 1  # valor de comparación inicial.
+g <- function(y,l)dgamma(y,shape = 1/2, rate=1/(2*l))
+
+for(j in 1:N){
+  
+  f1 <- g(y,L[1])
+  f2 <- g(y,L[2])
+  f3 <- g(y,L[3])
+  py <- f1/(f1+f2+f3)  # posterior de 1
+  qy <- f2/(f1+f2+f3)  # posterior de 2 
+  ry <- f3/(f1+f2+f3)  # posterior de 3
+
+  
+  mu1 <- sum(y*py)/sum(py) 
+  mu2 <- sum(y*qy)/sum(qy)
+  mu3 <- sum(y*ry)/sum(ry)
+  L <- c(mu1, mu2, mu3) # actualiza lambdas
+  L <- L/sum(L)
+  
+  if (sum(abs(L-L.old)/L.old) < tol ) break
+  L.old <- L
+}
+
+print(list(lambda = L/sum(L), iter = j, tol = tol))
+```
+
+El algoritmo convirgió en `r j` pasos. 
