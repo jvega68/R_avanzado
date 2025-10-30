@@ -1,7 +1,7 @@
 # R avanzado
 Curso de seis sesiones para revisar algunos temas de aplicación de `R`. Acordamos cubrir los siguientes temas (excepto el primero que fue una decisión personal, a falta de información):
 
-1. Temas de álgebra lineal. (sesión 1 del 7 de coctubre)
+1. Temas de álgebra lineal. (sesión 1 del 7 de octubre)
 
 2. Series de tiempo
 
